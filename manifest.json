@@ -3,10 +3,23 @@
   "name": "BOOTH License Checker",
   "version": "0.1.0",
   "description": "BOOTH の商品ページで VN3 ライセンス条件を自動チェックして警告を表示します",
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "booth-license-checker@example.com",
+      "strict_min_version": "109.0"
+    }
+  },
   "permissions": ["storage", "scripting", "tabs", "activeTab"],
   "host_permissions": [
     "https://booth.pm/*",
     "https://*.booth.pm/*"
+  ],
+  "optional_permissions": [
+    "https://drive.google.com/*",
+    "https://drive.usercontent.google.com/*",
+    "https://docs.google.com/*",
+    "https://www.dropbox.com/*",
+    "https://dl.dropboxusercontent.com/*"
   ],
   "optional_host_permissions": [
     "https://drive.google.com/*",
@@ -16,7 +29,8 @@
     "https://dl.dropboxusercontent.com/*"
   ],
   "background": {
-    "service_worker": "background.js"
+    "service_worker": "background.js",
+    "scripts": ["background.js"]
   },
   "action": {
     "default_popup": "popup.html",

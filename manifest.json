@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "BOOTH License Checker",
-  "version": "0.1.0",
+  "version": "0.1.2",
   "description": "BOOTH の商品ページで VN3 ライセンス条件を自動チェックして警告を表示します",
   "browser_specific_settings": {
     "gecko": {

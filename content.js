@@ -60,7 +60,6 @@
   let lastError = null;
 
   let bestMatchCount = -1;
-  let driveDownloadUnavailable = false;
 
   for (const url of expandedLinks) {
     try {
@@ -93,7 +92,6 @@
         if (!usedUrl) usedUrl = url;
       }
     } catch (e) {
-      if (e.message === 'DRIVE_DOWNLOAD_UNAVAILABLE') driveDownloadUnavailable = true;
       lastError = e;
     }
   }
@@ -107,11 +105,6 @@
 
   if (pdfIsImageBased) {
     showBanner({ status: 'image_pdf', links: licenseLinks, pdfUrl: usedUrl });
-    return;
-  }
-
-  if (driveDownloadUnavailable) {
-    showBanner({ status: 'drive_unavailable', links: licenseLinks });
     return;
   }
 
@@ -205,8 +198,15 @@
     const footerInfo = detectVN3Footer(text);
 
     // 個別条件セクション以降を検索対象にする
-    const sectionIdx = text.indexOf('個別条件');
-    const searchText = sectionIdx >= 0 ? text.slice(sectionIdx) : text;
+    // 「個別条件」は基本条項・個別条件双方の文面中に出現するが、見出しとしての「個別条件」は
+    // pdf.js のアイテム結合により前後が空白で囲まれた形で現れる（文中では隣接する日本語文字がある）
+    // 最後の一致を使うことで目次など前半の見出し相当の出現も除外する
+    const headingRe = /(?<!\S)個別条件(?!\S)/g;
+    let headingMatch, lastHeadingMatch;
+    while ((headingMatch = headingRe.exec(text)) !== null) {
+      lastHeadingMatch = headingMatch;
+    }
+    const searchText = lastHeadingMatch ? text.slice(lastHeadingMatch.index) : text;
 
     // [A-W]. パターンでオプションセクションの境界を検出
     // VN3 文書の個別条件は「A. タイトル\n選択値」の形式
@@ -237,15 +237,21 @@
       isGeneratorDoc: footerInfo.found,
       specVersion: footerInfo.specVersion,
       genVersion: footerInfo.genVersion,
-      specialNotes: extractSpecialNotes(text),
+      specialNotes: extractSpecialNotes(searchText),
     };
   }
 
   function extractSpecialNotes(text) {
-    // 最後の出現位置を使う（目次など前半の「特記事項」という語を誤拾いしないため）
-    const idx = text.lastIndexOf('特記事項');
-    if (idx === -1) return null;
+    // 個別条件の検出と同様に、前後が非空白文字でない（見出しとして孤立している）
+    // 「特記事項」のみを検出する。本文中に「特記事項」が含まれる場合の誤拾いを防ぐ。
+    const headingRe = /(?<!\S)特記事項(?!\S)/g;
+    let headingMatch, lastHeadingMatch;
+    while ((headingMatch = headingRe.exec(text)) !== null) {
+      lastHeadingMatch = headingMatch;
+    }
+    if (!lastHeadingMatch) return null;
 
+    const idx = lastHeadingMatch.index;
     const afterHeading = text.slice(idx + 4).trim();
 
     // pdf.js はページ境界でスペースを挿入するため、空白除去後に終端を検索し
@@ -269,8 +275,8 @@
       content = afterHeading;
     }
 
-    // 末尾に節番号 ("4." など) が残る場合は除去する
-    const trimmed = cleanPdfText(content.trim().replace(/\s*\d+[.．]\s*$/, '').trim());
+    // 末尾に節番号 ("4." / "４．" など、半角・全角を問わず) が残る場合は除去する
+    const trimmed = cleanPdfText(content.trim().replace(/\s*[\d０-９]+[.．]\s*$/, '').trim());
     if (!trimmed || /^[\s　]*なし[\s　]*$/.test(trimmed)) return null;
     return trimmed;
   }
@@ -432,22 +438,6 @@
         </div>
         <div class="vn3-banner__body">
           <p>このライセンス文書はテキストを含まない画像形式の PDF です。内容を手動でご確認ください。${pdfLinkHtml ? ' ' + pdfLinkHtml : ''}</p>
-        </div>
-      `;
-    } else if (status === 'drive_unavailable') {
-      banner.className = 'vn3-banner vn3-banner--warn';
-      const linksHtml = links.map(l =>
-        `<a class="vn3-link" href="${escapeHtml(l)}" target="_blank" rel="noopener">${escapeHtml(shortenUrl(l))} ↗</a>`
-      ).join('<br>');
-      banner.innerHTML = `
-        <div class="vn3-banner__header">
-          <span class="vn3-banner__icon">⚠️</span>
-          <span class="vn3-banner__title">BOOTH License Checker: ライセンス文書をダウンロードできませんでした</span>
-          <button class="vn3-close" aria-label="閉じる">✕</button>
-        </div>
-        <div class="vn3-banner__body">
-          <p>Google Drive のダウンロード制限またはアクセス権限の設定により、ファイルを自動取得できませんでした。下記リンクから直接ご確認ください。</p>
-          <p>${linksHtml}</p>
         </div>
       `;
     } else if (status === 'done') {

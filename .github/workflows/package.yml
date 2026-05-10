@@ -23,7 +23,7 @@ jobs:
 
       - name: Package extension
         run: |
-          zip -r booth-vn3-checker-v${{ steps.version.outputs.version }}.zip \
+          zip -r booth-license-checker-v${{ steps.version.outputs.version }}.zip \
             manifest.json \
             background.js \
             content.js \
@@ -39,11 +39,11 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: booth-vn3-checker-v${{ steps.version.outputs.version }}
-          path: booth-vn3-checker-v${{ steps.version.outputs.version }}.zip
+          name: booth-license-checker-v${{ steps.version.outputs.version }}
+          path: booth-license-checker-v${{ steps.version.outputs.version }}.zip
 
       - name: Create GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: booth-vn3-checker-v${{ steps.version.outputs.version }}.zip
+          files: booth-license-checker-v${{ steps.version.outputs.version }}.zip

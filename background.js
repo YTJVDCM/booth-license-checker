@@ -1,34 +1,65 @@
-// Service Worker: 外部 PDF の fetch を担当（CORS 回避）
+// Service Worker: 外部 PDF の fetch + テキスト抽出を担当（CORS 回避）
+// Firefox コンテントスクリプトでは ReadableStream の Xray wrapper 制約により
+// pdf.js が動作しないため、バックグラウンドでパースまで行う。
+
+// Chrome MV3 Service Worker: importScripts で読み込む
+// Firefox: manifest の background.scripts 配列で先に読み込まれるためスキップ
+if (typeof importScripts === 'function') {
+  importScripts('lib/pdf.min.js', 'lib/pdf.worker.min.js');
+}
 
 const MAX_PDF_BYTES = 20 * 1024 * 1024; // 20MB
 
-chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-  if (message.type === 'OPEN_OPTIONS') {
-    chrome.runtime.openOptionsPage();
-    sendResponse({ ok: true });
-    return false;
+// メッセージ処理本体（Promise を返す）
+function handleMessage(message) {
+  switch (message.type) {
+    case 'OPEN_OPTIONS':
+      chrome.runtime.openOptionsPage();
+      return Promise.resolve({ ok: true });
+    case 'FETCH_PDF_TEXT':
+      return fetchPdfText(message.url)
+        .then(result => ({ ok: true, text: result.text, empty: result.empty }))
+        .catch(err => ({ ok: false, error: err.message }));
+    case 'RESOLVE_DRIVE_FOLDER':
+      return resolveDriveFolder(message.url)
+        .then(urls => ({ ok: true, urls }))
+        .catch(err => ({ ok: false, error: err.message }));
+    case 'FETCH_GDOCS_TEXT':
+      return fetchGoogleDocsText(message.url)
+        .then(text => ({ ok: true, text }))
+        .catch(err => ({ ok: false, error: err.message }));
+    default:
+      return null;
   }
-  if (message.type === 'FETCH_PDF') {
-    fetchPdf(message.url)
-      .then(data => sendResponse({ ok: true, data }))
-      .catch(err => sendResponse({ ok: false, error: err.message }));
-    return true; // 非同期レスポンスを示す
-  }
-  if (message.type === 'RESOLVE_DRIVE_FOLDER') {
-    resolveDriveFolder(message.url)
-      .then(urls => sendResponse({ ok: true, urls }))
-      .catch(err => sendResponse({ ok: false, error: err.message }));
-    return true;
-  }
-  if (message.type === 'FETCH_GDOCS_TEXT') {
-    fetchGoogleDocsText(message.url)
-      .then(text => sendResponse({ ok: true, text }))
-      .catch(err => sendResponse({ ok: false, error: err.message }));
-    return true;
-  }
-});
+}
 
-async function fetchPdf(originalUrl) {
+// Firefox: browser.runtime.onMessage のリスナーから Promise を直接返すと、
+//   その解決値がそのまま sendMessage の戻り値になる（公式サポート）。
+// Chrome: sendResponse コールバック + return true でポートを維持する必要がある。
+// ブラウザを判定して適切なパターンを使い分ける。
+const _isFirefox = (typeof browser !== 'undefined' && !!browser.runtime?.onMessage);
+const _onMessage = _isFirefox ? browser.runtime.onMessage : chrome.runtime.onMessage;
+
+if (_isFirefox) {
+  // Firefox: Promise を返すパターン
+  _onMessage.addListener((message, _sender) => {
+    const result = handleMessage(message);
+    if (!result) return false;
+    return result.catch(err => ({ ok: false, error: err.message }));
+  });
+} else {
+  // Chrome: sendResponse + return true パターン
+  _onMessage.addListener((message, _sender, sendResponse) => {
+    const result = handleMessage(message);
+    if (!result) return false;
+    result
+      .then(sendResponse)
+      .catch(err => sendResponse({ ok: false, error: err.message }));
+    return true;
+  });
+}
+
+async function fetchPdfText(originalUrl) {
   const url = normalizeUrl(originalUrl);
   const response = await fetch(url, {
     credentials: 'omit',
@@ -63,13 +94,13 @@ async function fetchPdf(originalUrl) {
     if (retryType.includes('text/html')) {
       throw new Error('リトライ後も HTML が返されました。認証が必要な URL の可能性があります。');
     }
-    return await readPdfArray(retryResponse, retryUrl);
+    return await readPdfAndExtractText(retryResponse, retryUrl);
   }
 
-  return await readPdfArray(response, url);
+  return await readPdfAndExtractText(response, url);
 }
 
-async function readPdfArray(response, url) {
+async function readPdfAndExtractText(response, url) {
   // Content-Length で先にサイズチェック（ヘッダがあれば）
   const cl = parseInt(response.headers.get('content-length') ?? '', 10);
   if (Number.isFinite(cl) && cl > MAX_PDF_BYTES) {
@@ -79,8 +110,25 @@ async function readPdfArray(response, url) {
   if (buffer.byteLength > MAX_PDF_BYTES) {
     throw new Error(`PDF が大きすぎます (${buffer.byteLength} bytes): ${url}`);
   }
-  // ArrayBuffer は structuredClone でメッセージ送信できないため Uint8Array に変換
-  return Array.from(new Uint8Array(buffer));
+
+  // pdf.js でテキスト抽出
+  const uint8array = new Uint8Array(buffer);
+  const pdf = await pdfjsLib.getDocument({ data: uint8array, disableWorker: true }).promise;
+  try {
+    let fullText = '';
+    for (let i = 1; i <= pdf.numPages; i++) {
+      const page = await pdf.getPage(i);
+      const content = await page.getTextContent();
+      fullText += content.items.map(item => item.str).join(' ') + '\n';
+    }
+    // テキストが空または極端に短い場合は画像形式 PDF と判定
+    if (!fullText || fullText.trim().length <= 50) {
+      return { text: null, empty: true };
+    }
+    return { text: fullText, empty: false };
+  } finally {
+    try { await pdf.destroy(); } catch (_e) { /* noop */ }
+  }
 }
 
 // HTML から実際のダウンロード URL を抽出する（Google Drive 確認ページ対応）

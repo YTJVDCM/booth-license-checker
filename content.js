@@ -1,6 +1,12 @@
 (async () => {
   'use strict';
 
+  // ── ブラウザ API ─────────────────────────────────────────────────
+  // Firefox: browser.runtime.sendMessage は Promise をネイティブ返却する
+  // Chrome:  chrome.runtime.sendMessage (MV3) は callback 省略時に Promise を返す
+  const extRuntime = (typeof browser !== 'undefined' && browser.runtime) ? browser.runtime : chrome.runtime;
+  const sendExtMessage = (msg) => extRuntime.sendMessage(msg);
+
   // ── 定数 ───────────────────────────────────────────────────────────
 
   const BANNER_ID = 'booth-license-checker-banner';
@@ -62,8 +68,14 @@
       if (isGoogleDocsUrl(url)) {
         text = await fetchGoogleDocsText(url);
       } else {
-        const bytes = await fetchPdfBytes(url);
-        text = await extractTextFromPdf(bytes);
+        const result = await fetchPdfText(url);
+        if (result.empty) {
+          // PDF は取得できたがテキストがない（画像形式の PDF）
+          pdfIsImageBased = true;
+          if (!usedUrl) usedUrl = url;
+          continue;
+        }
+        text = result.text;
       }
       if (text && text.length > 50) {
         const candidate = parseLicenseText(text);
@@ -76,7 +88,7 @@
           if (matchCount === VN3_OPTIONS.length) break;
         }
       } else {
-        // PDF は取得できたがテキストがない（画像形式の PDF）
+        // テキストが空または短すぎる
         pdfIsImageBased = true;
         if (!usedUrl) usedUrl = url;
       }
@@ -138,20 +150,11 @@
         continue;
       }
       try {
-        const resolvedUrls = await new Promise((resolve, reject) => {
-          chrome.runtime.sendMessage({ type: 'RESOLVE_DRIVE_FOLDER', url }, response => {
-            if (chrome.runtime.lastError) {
-              reject(new Error(chrome.runtime.lastError.message));
-              return;
-            }
-            if (!response || !response.ok) {
-              reject(new Error(response?.error || 'unknown resolve error'));
-              return;
-            }
-            resolve(response.urls);
-          });
-        });
-        expanded.push(...resolvedUrls);
+        const response = await sendExtMessage({ type: 'RESOLVE_DRIVE_FOLDER', url });
+        if (!response || !response.ok) {
+          throw new Error(response?.error || 'unknown resolve error');
+        }
+        expanded.push(...response.urls);
       } catch (_e) {
         expanded.push(url); // 解決失敗 → 元の URL を保持（手動確認フォールバック）
       }
@@ -160,65 +163,25 @@
   }
 
   // ════════════════════════════════════════════════════════════════════
-  // PDF 取得
+  // PDF テキスト取得（バックグラウンドで fetch + pdf.js パースを実行）
   // ════════════════════════════════════════════════════════════════════
 
-  function fetchPdfBytes(url) {
-    return new Promise((resolve, reject) => {
-      chrome.runtime.sendMessage({ type: 'FETCH_PDF', url }, response => {
-        if (chrome.runtime.lastError) {
-          reject(new Error(chrome.runtime.lastError.message));
-          return;
-        }
-        if (!response || !response.ok) {
-          reject(new Error(response?.error || 'unknown fetch error'));
-          return;
-        }
-        resolve(new Uint8Array(response.data));
-      });
-    });
-  }
-
-  function fetchGoogleDocsText(url) {
-    return new Promise((resolve, reject) => {
-      chrome.runtime.sendMessage({ type: 'FETCH_GDOCS_TEXT', url }, response => {
-        if (chrome.runtime.lastError) {
-          reject(new Error(chrome.runtime.lastError.message));
-          return;
-        }
-        if (!response || !response.ok) {
-          reject(new Error(response?.error || 'unknown gdocs fetch error'));
-          return;
-        }
-        resolve(response.text);
-      });
-    });
-  }
-
-  // ════════════════════════════════════════════════════════════════════
-  // PDF テキスト抽出（pdf.js v3 UMD）
-  // ════════════════════════════════════════════════════════════════════
-
-  async function extractTextFromPdf(uint8array) {
-    // pdf.js の Worker は web_accessible_resources で公開済み
-    if (typeof pdfjsLib === 'undefined') throw new Error('pdf.js が読み込まれていません');
-
-    pdfjsLib.GlobalWorkerOptions.workerSrc = chrome.runtime.getURL('lib/pdf.worker.min.js');
-
-    const loadingTask = pdfjsLib.getDocument({ data: uint8array });
-    const pdf = await loadingTask.promise;
-    try {
-      let fullText = '';
-      for (let i = 1; i <= pdf.numPages; i++) {
-        const page = await pdf.getPage(i);
-        const content = await page.getTextContent();
-        fullText += content.items.map(item => item.str).join(' ') + '\n';
-      }
-      return fullText;
-    } finally {
-      try { await pdf.destroy(); } catch (_e) { /* noop */ }
+  async function fetchPdfText(url) {
+    const response = await sendExtMessage({ type: 'FETCH_PDF_TEXT', url });
+    if (!response || !response.ok) {
+      throw new Error(response?.error || 'unknown fetch error');
     }
+    return { text: response.text, empty: response.empty };
   }
+
+  async function fetchGoogleDocsText(url) {
+    const response = await sendExtMessage({ type: 'FETCH_GDOCS_TEXT', url });
+    if (!response || !response.ok) {
+      throw new Error(response?.error || 'unknown gdocs fetch error');
+    }
+    return response.text;
+  }
+
 
   // ════════════════════════════════════════════════════════════════════
   // VN3 条件パース
@@ -453,7 +416,7 @@
       `;
       if (permissionMissing) {
         banner.querySelector('#vn3-open-options').addEventListener('click', () => {
-          chrome.runtime.sendMessage({ type: 'OPEN_OPTIONS' });
+          sendExtMessage({ type: 'OPEN_OPTIONS' });
         });
       }
     } else if (status === 'image_pdf') {
@@ -561,7 +524,7 @@
       if (checkedIds.length === 0) {
         const body = document.createElement('div');
         body.className = 'vn3-banner__body';
-        body.innerHTML = `<p>許容条件が設定されていません。<a class="vn3-link" href="${chrome.runtime.getURL('options.html')}" target="_blank">設定ページ</a>で条件を設定してください。</p>`;
+        body.innerHTML = `<p>許容条件が設定されていません。<a class="vn3-link" href="${extRuntime.getURL('options.html')}" target="_blank">設定ページ</a>で条件を設定してください。</p>`;
         banner.querySelector('.vn3-banner__header')?.insertAdjacentElement('afterend', body);
       }
     }

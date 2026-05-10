@@ -30,7 +30,7 @@
   ],
   "background": {
     "service_worker": "background.js",
-    "scripts": ["background.js"]
+    "scripts": ["lib/pdf.min.js", "lib/pdf.worker.min.js", "background.js"]
   },
   "action": {
     "default_popup": "popup.html",
@@ -49,7 +49,6 @@
         "https://*.booth.pm/items/*"
       ],
       "js": [
-        "lib/pdf.min.js",
         "lib/link-extractor.js",
         "vn3-options.js",
         "content.js"

@@ -5,7 +5,7 @@
 // Chrome MV3 Service Worker: importScripts で読み込む
 // Firefox: manifest の background.scripts 配列で先に読み込まれるためスキップ
 if (typeof importScripts === 'function') {
-  importScripts('lib/pdf.min.js', 'lib/pdf.worker.min.js');
+  importScripts('lib/pdf.min.mjs', 'lib/pdf.worker.min.mjs');
 }
 
 const MAX_PDF_BYTES = 20 * 1024 * 1024; // 20MB
